@@ -894,10 +894,14 @@ void BL_ArmatureObject::DoGpuSkinning()
    *   and normals are computed from these positions. This approach produces
    *   shading results very similar to the CPU pipeline.
    */
+  // === SHADER 1: Skin Vertices ===
   if (!m_skinStatic->shader_skin_vertices) {
-    ShaderCreateInfo info("BGE_Armature_Skin_Vertices_Pass");
+    ShaderCreateInfo info("pyGPU_Shader");
+
+    // Local group size
     info.local_group_size(group_size, 1, 1);
-    info.compute_source("draw_colormanagement_lib.glsl");
+
+    // Storage buffers (ressources)
     info.storage_buf(0, Qualifier::write, "vec4", "skinned_vert_positions[]");
     info.storage_buf(1, Qualifier::read, "ivec4", "in_idx[]");
     info.storage_buf(2, Qualifier::read, "vec4", "in_wgt[]");
@@ -905,7 +909,8 @@ void BL_ArmatureObject::DoGpuSkinning()
     info.storage_buf(4, Qualifier::read, "mat4", "premat[]");
     info.storage_buf(5, Qualifier::read, "vec4", "rest_positions[]");
 
-    info.compute_source_generated = R"GLSL(
+    // Source GLSL brute
+    std::string compute_src = R"GLSL(
 #ifndef CONTRIB_THRESHOLD
 #define CONTRIB_THRESHOLD 1e-4
 #endif
@@ -933,18 +938,25 @@ void main() {
   skinned_vert_positions[v] = skin_pos_object(int(v));
 }
 )GLSL";
-    m_skinStatic->shader_skin_vertices = GPU_shader_create_from_info((GPUShaderCreateInfo *)&info);
+    info.compute_source_generated = compute_src;
+
+    m_skinStatic->shader_skin_vertices = GPU_shader_create_from_info_python((GPUShaderCreateInfo *)&info, false);
   }
 
+  // === SHADER 2: Scatter to Corners ===
   if (!m_skinStatic->shader_scatter_to_corners) {
-    ShaderCreateInfo info("BGE_Armature_Scatter_Pass");
+    ShaderCreateInfo info("pyGPU_Shader");
+
     info.local_group_size(group_size, 1, 1);
-    info.compute_source("draw_colormanagement_lib.glsl");
+
+    // Storage buffers
     info.storage_buf(0, Qualifier::write, "vec4", "positions[]");
     info.storage_buf(1, Qualifier::write, "uint", "normals[]");
     info.storage_buf(2, Qualifier::read, "vec4", "skinned_vert_positions[]");
     info.storage_buf(3, Qualifier::read, "mat4", "postmat[]");
     info.storage_buf(4, Qualifier::read, "int", "topo[]");
+
+    // Specialization constants
     info.specialization_constant(
         Type::int_t, "face_offsets_offset", m_skinStatic->face_offsets_offset);
     info.specialization_constant(
@@ -960,11 +972,12 @@ void main() {
         "normals_domain",
         mesh_eval->normals_domain() == blender::bke::MeshNormalDomain::Face ? 1 : 0);
     info.specialization_constant(
-        blender::gpu::shader::Type::int_t,
+        Type::int_t,
         "normals_hq",
-        int(bool(GetScene()->GetBlenderScene()->r.perf_flag & SCE_PERF_HQ_NORMALS) || GPU_use_hq_normals_workaround()));
+        int(bool(GetScene()->GetBlenderScene()->r.perf_flag & SCE_PERF_HQ_NORMALS) ||
+            GPU_use_hq_normals_workaround()));
 
-    info.compute_source_generated = R"GLSL(
+    std::string compute_src = R"GLSL(
 // Utility accessors
 int face_offsets(int i) { return topo[face_offsets_offset + i]; }
 int corner_to_face(int i) { return topo[corner_to_face_offset + i]; }
@@ -1057,12 +1070,16 @@ void main() {
   }
 }
 )GLSL";
-    m_skinStatic->shader_scatter_to_corners = GPU_shader_create_from_info(
-        (GPUShaderCreateInfo *)&info);
+    info.compute_source_generated = compute_src;
+
+    m_skinStatic->shader_scatter_to_corners = GPU_shader_create_from_info_python(
+        (GPUShaderCreateInfo *)&info, false);
   }
 
   // 6. Pass 1: Skin vertices
-  GPU_shader_bind(m_skinStatic->shader_skin_vertices);
+  const blender::gpu::shader::SpecializationConstants *constants_state1 =
+      &GPU_shader_get_default_constant_state(m_skinStatic->shader_skin_vertices);
+  GPU_shader_bind(m_skinStatic->shader_skin_vertices, constants_state1);
   GPU_storagebuf_bind(m_skinStatic->ssbo_skinned_vert_positions, 0);
   GPU_storagebuf_bind(m_skinStatic->ssbo_in_idx, 1);
   GPU_storagebuf_bind(m_skinStatic->ssbo_in_wgt, 2);
@@ -1071,13 +1088,13 @@ void main() {
   GPU_storagebuf_bind(m_skinStatic->ssbo_rest_positions, 5);
 
   const int num_groups_verts = (verts_num + group_size - 1) / group_size;
-  GPU_compute_dispatch(m_skinStatic->shader_skin_vertices, num_groups_verts, 1, 1);
+  GPU_compute_dispatch(m_skinStatic->shader_skin_vertices, num_groups_verts, 1, 1, constants_state1);
   GPU_memory_barrier(GPU_BARRIER_SHADER_STORAGE);
 
   // 7. Pass 2: Scatter to corners and calculate normals
-  const blender::gpu::shader::SpecializationConstants *constants_state =
+  const blender::gpu::shader::SpecializationConstants *constants_state2 =
       &GPU_shader_get_default_constant_state(m_skinStatic->shader_scatter_to_corners);
-  GPU_shader_bind(m_skinStatic->shader_scatter_to_corners, constants_state);
+  GPU_shader_bind(m_skinStatic->shader_scatter_to_corners, constants_state2);
   vbo_pos->bind_as_ssbo(0);
   vbo_nor->bind_as_ssbo(1);
   GPU_storagebuf_bind(m_skinStatic->ssbo_skinned_vert_positions, 2);
@@ -1086,7 +1103,7 @@ void main() {
 
   const int num_groups_corners = (num_corners + group_size - 1) / group_size;
   GPU_compute_dispatch(
-      m_skinStatic->shader_scatter_to_corners, num_groups_corners, 1, 1, constants_state);
+      m_skinStatic->shader_scatter_to_corners, num_groups_corners, 1, 1, constants_state2);
   GPU_memory_barrier(GPU_BARRIER_SHADER_STORAGE | GPU_BARRIER_VERTEX_ATTRIB_ARRAY);
 
   GPU_shader_unbind();

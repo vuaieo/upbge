@@ -584,13 +584,13 @@ bool WM_region_use_viewport(ScrArea *area, ARegion *region)
   return wm_region_use_viewport_by_type(area->spacetype, region->regiontype);
 }
 
-static const char *wm_area_name(ScrArea *area)
+static const char *wm_area_name(const ScrArea *area)
 {
 #define SPACE_NAME(space) \
-  case space: \
-    return #space;
-
-  switch (area->spacetype) {
+  case space: { \
+    return #space; \
+  }
+  switch (eSpace_Type(area->spacetype)) {
     SPACE_NAME(SPACE_EMPTY);
     SPACE_NAME(SPACE_VIEW3D);
     SPACE_NAME(SPACE_GRAPH);
@@ -604,15 +604,18 @@ static const char *wm_area_name(ScrArea *area)
     SPACE_NAME(SPACE_ACTION);
     SPACE_NAME(SPACE_NLA);
     SPACE_NAME(SPACE_SCRIPT);
+    SPACE_NAME(SPACE_LOGIC);
     SPACE_NAME(SPACE_NODE);
     SPACE_NAME(SPACE_CONSOLE);
     SPACE_NAME(SPACE_USERPREF);
     SPACE_NAME(SPACE_CLIP);
     SPACE_NAME(SPACE_TOPBAR);
     SPACE_NAME(SPACE_STATUSBAR);
-    default:
-      return "Unknown Space";
+    SPACE_NAME(SPACE_SPREADSHEET);
   }
+#undef SPACE_NAME
+
+  return "Unknown Space";
 }
 
 /** \} */

@@ -23,6 +23,7 @@
 #include "DNA_windowmanager_types.h"
 
 #include "BLI_listbase.h"
+#include "BLI_memory_cache.hh"
 #include "BLI_path_utils.hh"
 #include "BLI_string.h"
 #include "BLI_task.h"
@@ -48,7 +49,7 @@
 #include "BKE_report.hh"
 #include "BKE_scene.hh"
 #include "BKE_screen.hh"
-#include "BKE_sound.h"
+#include "BKE_sound.hh"
 #include "BKE_vfont.hh"
 
 #include "BKE_addon.h"
@@ -490,8 +491,6 @@ bool WM_init_game(bContext *C)
     WM_operator_name_call(
         C, "VIEW3D_OT_game_start", blender::wm::OpCallContext::ExecDefault, NULL, NULL);
 
-    BKE_sound_exit();
-
     return true;
   }
   else {
@@ -669,6 +668,10 @@ void WM_exit_ex(bContext *C, const bool do_python_exit, const bool do_user_exit_
   free_openrecent();
 
   BKE_mball_cubeTable_free();
+
+  /* Clear the cache which may (indirectly) contain e.g. GPU resources which need to be freed
+   * before the GPU backend is destroyed. */
+  memory_cache::clear();
 
   /* Render code might still access databases. */
   RE_FreeAllRender();
